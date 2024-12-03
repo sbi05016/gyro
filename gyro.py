@@ -141,11 +141,9 @@ def paging(data):
         st.warning("데이터가 없습니다.")
         return
     
-    elif data.shape[0] == 1:
-        items_per_page = 1
-        return
+
     
-    elif data.shape[0] < 10:
+    elif 0<data.shape[0] < 10:
         st.sidebar.warning("데이터가 너무 작아 페이지당 항목 수를 설정할 수 없습니다.")
         items_per_page = data.shape[0]  # 모든 데이터를 한 페이지로 표시
     
