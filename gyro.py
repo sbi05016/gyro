@@ -148,8 +148,8 @@ def paging(data):
         items_per_page = data.shape[0]  # 모든 데이터를 한 페이지로 표시
     
     else:
-        default_items_per_page = max(1, data.shape[0] // 100)
-        items_per_page = st.sidebar.slider("페이지당 항목 수", min_value=20, max_value=data.shape[0], value=min(default_items_per_page,data.shape[0]), step=10)
+        default_items_per_page = max(1, data.shape[0] // 10)
+        items_per_page = st.sidebar.slider("페이지당 항목 수", min_value=1, max_value=data.shape[0], value=default_items_per_page, step=10)
     
     total_items = len(data)
     
