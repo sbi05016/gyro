@@ -136,11 +136,16 @@ def sensor_moving_peak(sensor, window_size=1, min_distance=10, feature='roll'):
 
 
 def paging(data):
-
     
-    items_per_page = st.sidebar.slider("페이지당 항목 수", min_value=1, max_value=data.shape[0], value=data.shape[0]//100, step=10)
+    if data.shape[0] == 0:
+        st.warning("데이터가 없습니다.")
+        return
+    
+    default_items_per_page = max(1, data.shape[0] // 100)
+    items_per_page = st.sidebar.slider("페이지당 항목 수", min_value=1, max_value=data.shape[0], value=default_items_per_page, step=10)
+    
     total_items = len(data)
-
+    
     if total_items == 0:
         st.warning("데이터가 없습니다.")  # 데이터가 없을 경우 경고 메시지 표시
         return
@@ -156,8 +161,9 @@ def paging(data):
     else:
         current_page = 1  # 총 페이지가 1개 이하인 경우 기본값 설정
 
-    start_idx = (current_page - 1) * items_per_page
-    end_idx = start_idx + items_per_page
+    start_idx = max(0, (current_page - 1) * items_per_page)
+    end_idx = min(total_items, start_idx + items_per_page)
+    
     current_data = data.iloc[start_idx:end_idx]
 
     st.write(f"현재 페이지: {current_page}/{total_pages}")
