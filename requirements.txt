@@ -27,7 +27,7 @@ packaging==24.2
 pandas==2.2.3
 pillow==11.0.0
 protobuf==5.29.0
-psycopg2==2.9.10
+psycopg2-binary
 pyarrow==18.1.0
 pydeck==0.9.1
 Pygments==2.18.0
