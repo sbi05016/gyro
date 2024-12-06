@@ -10,6 +10,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 from scipy.signal import find_peaks
+import matplotlib.dates as mdates
+
+
 plt.rcParams['font.family'] ='Malgun Gothic'
 plt.rcParams['axes.unicode_minus'] =False
 
@@ -216,17 +219,65 @@ def paging(data):
                     min_distance=current_distance,
                     
                 )
+                # 슬라이더로 시간 범위 조절
+                min_date = current_data2['created_at'].min().to_pydatetime()  # 최소 날짜
+                max_date = current_data2['created_at'].max().to_pydatetime()  # 최대 날짜
 
+                x_axis_range = st.slider(
+                    "X축 날짜 범위를 선택하세요",
+                    min_value=min_date,
+                    max_value=max_date,
+                    value=(min_date, max_date),  # 기본값은 전체 범위
+                    format="MM/DD HH:mm",
+                    step=datetime.timedelta(minutes=1),
+                    key=f"x_axis_range_{feature}"
+                )
+
+                # 필터링된 데이터
+                
+                x_start, x_end = x_axis_range
+                
+                if x_start >= x_end:
+                    st.warning("범위가 올바르지 않습니다")
+                    return
+                
+                current_data_filtered = current_data2[
+                    (current_data2['created_at'] >= x_start) &
+                    (current_data2['created_at'] <= x_end)
+                    ]
+                
+                
+                if current_data_filtered.empty:
+                    st.warning("선택된 X축 범위 내 데이터가 없습니다. 범위를 변경해주세요.")
+                    return
+                
                 if view_option == "그래프 보기":
-                    
-                    # 그래프 생성
-                    fig, ax = plt.subplots(figsize=(20, 10))
-                    print(current_data2)
                     if sensor_period.shape[0] > 0:
                         
+                        
+                        
+                        # X축 간격 조절 방식 선택
+                        x_axis_mode = st.radio(
+                            "X축 간격 조절 방식",
+                            options=["자동", "수동"],
+                            index=0,
+                            key=f"x_axis_mode_{feature}"
+                        )
+                        
+                        # 수동 모드 간격 선택 (콤보박스)
+                        manual_interval = None
+                        if x_axis_mode == "수동":
+                            manual_interval = st.selectbox(
+                                "수동 간격 선택",
+                                options=["1분", "5분", "10분", "30분", "1시간"],
+                                index=4,
+                                key=f"manual_interval_{feature}"
+                            )
+                            
+                        fig, ax = plt.subplots(figsize=(20, 10))    
                         ax.plot(
-                                current_data2['created_at'],
-                                current_data2[feature],
+                                current_data_filtered['created_at'],
+                                current_data_filtered[feature],
                                 label=f"{feature} 원본 데이터",
                                 linestyle='--',
                                 alpha=0.7,
@@ -235,37 +286,73 @@ def paging(data):
                         
                         # 평활화 그래프 그리기
                         ax.plot(
-                            current_data2['created_at'],
-                            current_data2['smoothed_value'],
+                            current_data_filtered['created_at'],
+                            current_data_filtered['smoothed_value'],
                             label=f"{feature} 평활화 데이터",
                             zorder=1
                         )
 
                         # 피크 데이터 그리기
                         
-                        if len(peaks) > 0:  # peaks가 있는 경우만 처리
-                            peak_times = current_data2.iloc[peaks]['created_at']
-                            peak_values = current_data2.iloc[peaks]['smoothed_value']
-                            ax.scatter(
-                                peak_times,
-                                peak_values,
-                                color='orange',
-                                s=50,
-                                label=f"{feature} (peaks)",
-                                zorder=2
-                            )
+                        if len(peaks) > 0:
+                            
 
-                        # x축 범위 설정
-                        ax.set_xlim(current_data2['created_at'].min(), current_data2['created_at'].max())
-                        ax.set_xlabel("날짜")
-                        ax.set_ylabel("Value")
+                            filtered_peaks, _ = find_peaks(
+                            current_data_filtered['smoothed_value'],  # 평활화된 값 기준으로 피크 탐지
+                            distance=current_distance  # 슬라이더에서 설정한 최소 거리 사용
+                        )
+
+                            
+
+                            if len(filtered_peaks) > 0:
+                                # 유효한 피크 인덱스만 사용
+                                peak_times = current_data_filtered.iloc[filtered_peaks]['created_at']
+                                peak_values = current_data_filtered.iloc[filtered_peaks]['smoothed_value']
+
+                                # 피크 데이터 표시
+                                ax.scatter(
+                                    peak_times,
+                                    peak_values,
+                                    color='orange',
+                                    s=50,
+                                    label=f"{feature} (peaks)",
+                                    zorder=2
+                                )
+                            else:
+                                st.warning("선택된 범위 내 유효한 피크 데이터가 없습니다.")
+                            
+                        else:
+                            st.warning("피크 데이터가 없습니다.")
+                            
+                        # X축 간격 설정
+                        if x_axis_mode == "자동":
+                            ax.xaxis.set_major_locator(mdates.AutoDateLocator())  # 자동 간격 설정
+                            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))  # 날짜 형식 지정
+                        elif x_axis_mode == "수동":
+                            # 수동 간격 처리
+                            interval_map = {
+                                "1분": mdates.MinuteLocator(interval=1),
+                                "5분": mdates.MinuteLocator(interval=5),
+                                "10분": mdates.MinuteLocator(interval=10),
+                                "30분": mdates.MinuteLocator(interval=30),
+                                "1시간": mdates.HourLocator(interval=1),
+                            }
+                            ax.xaxis.set_major_locator(interval_map[manual_interval])
+                            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))  # 시간 형식 표시 (시:분)
+
+                        # X축 레이블 회전 및 폰트 크기
+                        plt.xticks(rotation=45, fontsize=10)
+
+                        # 그래프 꾸미기
+                        ax.set_xlabel("시간")
+                        ax.set_ylabel("값")
                         ax.set_title(f"Sensor Data: {feature}")
                         ax.legend()
-                        plt.xticks(rotation=45, fontsize=10)  # x축 레이블 회전
                         ax.grid(True)
 
                         # Streamlit에 그래프 표시
                         st.pyplot(fig)
+                            
                     else:
                         st.warning(f"{feature} 데이터가 없습니다.")
                 
@@ -273,6 +360,8 @@ def paging(data):
                     if not sensor_period.empty:
                         st.subheader(f"Sensor Period Data: {feature}")
                         st.table(sensor_period)
+                        st.subheader(f"{feature} Data")
+                        st.tabel(current_data_filtered)
                     else:
                         st.warning(f"{feature}에 대한 데이터가 없습니다.")
             else:
@@ -299,7 +388,7 @@ st.set_page_config(layout="wide")  # 와이드 레이아웃 활성화
 # 사이드바: 날짜 및 조회 설정
 with st.sidebar:
     st.title("Gyro 데이터 조회")
-    start_date = st.date_input("시작일", value=datetime.date.today() - datetime.timedelta(days=14))
+    start_date = st.date_input("시작일", value=datetime.date.today() - datetime.timedelta(days=1))
     end_date = st.date_input("종료일", value=datetime.date.today())
 
     if st.button("조회"):
