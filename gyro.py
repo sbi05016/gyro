@@ -18,7 +18,7 @@ HOSTNAME = '203.253.202.70'
 PORT = 5432
 USERNAME = 'kkilab'
 PASSWORD = 'kkilab'
-DATABASE = 'gyro'
+DATABASE = 'safetyship'
 
 
 # 접속 엔진 생성
@@ -29,25 +29,40 @@ engine = create_engine(con_str)
 # 데이터베이스에서 선박 데이터 가져오기
 def get_ship_names(start_date, end_date):
     query = f"""
-        SELECT device_id, COUNT(DISTINCT CONCAT(orientation_x, orientation_y, orientation_z, orientation_w, device_id, created_at)) as ea
-                FROM raw_imu
-                WHERE created_at2 >= '{start_date}' AND created_at2 <= '{end_date}'
-                GROUP BY device_id
+                            SELECT 
+                        u.uid,
+                        u.mmsi,
+                        r.device_id,
+                        COUNT(sensor_value_1) as ea
+                    FROM 
+                        PUBLIC."Sensor" r
+                    JOIN 
+                        PUBLIC."User" u
+                    ON 
+                        r.device_id = u.device_name 
+                    WHERE 
+                        r.created_at >= '{start_date}' AND r.created_at <= '{end_date} 23:59:59'
+                    GROUP BY 
+                        u.uid, u.mmsi, r.device_id;
     """
+    
+    
+    
     with psycopg2.connect(host=HOSTNAME, dbname=DATABASE, user=USERNAME, password=PASSWORD) as conn:
         return psql.read_sql(query, conn)
 
 # 데이터베이스에서 특정 device_id의 데이터를 가져오기
 def get_gyro_data(start_date, end_date, device_id):
+
     if device_id == '전체 선박':
         query_raw = ''
     else:
         query_raw = f"device_id = '{device_id}' AND"
 
     query1 = f"""
-        SELECT orientation_x, orientation_y, orientation_z, orientation_w, device_id, created_at
-        FROM raw_imu
-        WHERE {query_raw} created_at2 >= '{start_date}' AND created_at2 <= '{end_date}'
+        SELECT sensor_name,sensor_value_1,device_id,created_at
+        FROM PUBLIC."Sensor"
+        WHERE {query_raw} created_at >= '{start_date}' AND created_at <= '{end_date} 23:59:59'
         ORDER BY created_at DESC;
     """
     
@@ -59,76 +74,43 @@ def get_gyro_data(start_date, end_date, device_id):
     
 
     return raw_imu_data
-def quaternion_to_euler(x, y, z, w):
-    # Roll (X axis rotation)
-    sinr_cosp = 2 * (w * x + y * z)
-    cosr_cosp = 1 - 2 * (x * x + y * y)
-    roll = math.atan2(sinr_cosp, cosr_cosp)
-
-    # Pitch (Y axis rotation)
-    sinp = 2 * (w * y - z * x)
-    if abs(sinp) >= 1:
-        pitch = math.copysign(math.pi / 2, sinp)  # use 90 degrees if out of range
-    else:
-        pitch = math.asin(sinp)
-
-    # Yaw (Z axis rotation)
-    siny_cosp = 2 * (w * z + x * y)
-    cosy_cosp = 1 - 2 * (y * y + z * z)
-    yaw = math.atan2(siny_cosp, cosy_cosp)
 
 
-    return roll, pitch, yaw
 
+def sensor_moving_peak(sensor, feature, window_size=1, min_distance=10):
+    sensor['smoothed_value'] = sensor[feature].rolling(window=window_size).mean()
+    sensor = sensor.dropna(subset=['smoothed_value'])  # 결측값 제거
 
-def sensor_moving_peak(sensor, window_size=1, min_distance=10, feature='roll'):
-    sensor_period = pd.DataFrame()
-    
-    
-    # 이동평균 평활화
-    sensor.loc[:, feature] = sensor[feature].rolling(window=window_size).mean()
-    
-    sensor = sensor.dropna(subset=[feature])  # 결측값 제거
     # peak 값 구하기
-    peaks, _ = find_peaks(sensor[feature], distance=min_distance)
-    
-    
-    #주기, 속력 구하기
-    period_data = []  # 데이터를 담을 리스트
+    peaks, _ = find_peaks(sensor['smoothed_value'], distance=min_distance)
 
-    for i in range(1, peaks.shape[0]):
-        start_idx = peaks[i - 1]
-        end_idx = peaks[i]
+    # 주기, 속력 구하기
+    period_data = []
+ 
+    sensor_period = pd.DataFrame(columns=['start_idx','end_idx','max_deg','min_deg','deg_diff','period','spd','datetime'])
+    for i in range(1,peaks.shape[0]):
+        start_idx =  peaks[i-1]
+        end_idx =  peaks[i]
         max_deg = sensor.iloc[start_idx:end_idx][feature].max()
         min_deg = sensor.iloc[start_idx:end_idx][feature].min()
-        deg_diff = max_deg - min_deg
-        period = end_idx - start_idx
-        spd = deg_diff / period
-    
-        device_id = sensor.index[0]
-        datetime = sensor.created_at.iloc[start_idx]
+        deg_diff = sensor.iloc[start_idx:end_idx][feature].max()-sensor.iloc[start_idx:end_idx][feature].min()
+        period = peaks[i] - peaks[i-1]
+        feature_spd = deg_diff / period
 
-        # period_data 리스트에 딕셔너리 추가
-        period_data.append({
-            'device_id': device_id,
-            'datetime': datetime,
-            f'max_deg_{feature}': max_deg,
-            f'min_deg_{feature}': min_deg,
-            f'deg_diff_{feature}': deg_diff,
-            f'{feature}_spd': spd,
-            'period': period
-        })
-    
-    # 리스트를 데이터프레임으로 변환
-    sensor_period = pd.DataFrame(period_data)
+        
+        datetime = sensor.created_at.iloc[peaks[i-1]]
+        new_df = pd.DataFrame(columns=['start_idx','end_idx','max_deg','min_deg','deg_diff','period','spd','datetime'],
+                                                         data=[[start_idx,end_idx,int(max_deg),int(min_deg),deg_diff,period,feature_spd,datetime]])
+       
+        sensor_period = pd.concat([sensor_period,new_df])
 
-    # 하위 30%, 상위 30% 제거
-    lower_quantile = sensor_period[f'deg_diff_{feature}'].quantile(0.2)
-    upper_quantile = sensor_period[f'deg_diff_{feature}'].quantile(0.8)
-    sensor_period = sensor_period[
-        (sensor_period[f'deg_diff_{feature}'] > lower_quantile) & 
-        (sensor_period[f'deg_diff_{feature}'] < upper_quantile)
-    ]
+
+    # 하위 30%, 상위 30% 제거. 
+    lower_quantile = sensor_period.deg_diff.quantile(0.2)
+    upper_quantile = sensor_period.deg_diff.quantile(0.8)
+    sensor_period =  sensor_period[(sensor_period.deg_diff > lower_quantile) & (sensor_period.deg_diff < upper_quantile)]
+
+    sensor_period = sensor_period[['max_deg','min_deg','spd','datetime']]
 
     
     return sensor_period, peaks
@@ -148,7 +130,10 @@ def paging(data):
         items_per_page = data.shape[0]  # 모든 데이터를 한 페이지로 표시
     
     else:
-        default_items_per_page = max(1, data.shape[0] // 10)
+        if data.shape[0]//10>0:
+            default_items_per_page = max(10, data.shape[0] // 10)
+        else:
+            default_items_per_page = max(1, data.shape[0] // 10)
         items_per_page = st.sidebar.slider("페이지당 항목 수", min_value=1, max_value=data.shape[0], value=default_items_per_page, step=10)
     
     total_items = len(data)
@@ -176,71 +161,94 @@ def paging(data):
     st.write(f"현재 페이지: {current_page}/{total_pages}")
     st.dataframe(current_data)
 
-    current_data.loc[:, 'roll'], current_data.loc[:, 'pitch'], current_data.loc[:, 'yaw'] = zip(*current_data.apply(
-        lambda row: np.degrees(quaternion_to_euler(
-            row['orientation_x'], row['orientation_y'], row['orientation_z'], row['orientation_w']
-        )), axis=1))
+    # current_data.loc[:, 'roll'], current_data.loc[:, 'pitch'], current_data.loc[:, 'yaw'] = zip(*current_data.apply(
+    #     lambda row: np.degrees(quaternion_to_euler(
+    #         row['orientation_x'], row['orientation_y'], row['orientation_z'], row['orientation_w']
+    #     )), axis=1))
 
     # 여러 컬럼 선택 및 그래프 생성
-    selected_columns = st.multiselect("그래프로 그릴 컬럼을 선택하세요:", ['roll', 'pitch', 'yaw'])
+    selected_columns = st.multiselect("그래프로 그릴 컬럼을 선택하세요:", ['Roll', 'Pitch'])
 
     if selected_columns:
-        # 데이터 크기 계산
-        data_size = current_data.shape[0]
+        for feature in selected_columns:
+            current_data2 = current_data[current_data['sensor_name']==feature]
+            current_data2 = current_data2.rename(columns={"sensor_value_1": feature})
+            current_data2 = current_data2.drop(columns=['sensor_name'])
+            
+            # 데이터 크기 계산
+            data_size = current_data2.shape[0]
+       
+            if data_size> 1:  # 슬라이더를 생성할 수 있는 조건
+                current_window_size = st.slider(
+                    label="빈도 선택",
+                    min_value=1,
+                    max_value=max(20, data_size // 2),
+                    value=min(5, data_size // 2),
+                    key=f"window_size_{feature}",  # 고유 key 추가
+                    step=1
+                )
 
-        if data_size // 10 > 1:  # 슬라이더를 생성할 수 있는 조건
-            current_window_size = st.slider(
-                label="빈도 선택",
-                min_value=1,
-                max_value=data_size // 10,
-                value=data_size // 10 // 2,
-                step=1
-            )
+                current_distance = st.slider(
+                    label="피크 간 최소 거리(distance)",
+                    min_value=1,
+                    max_value=10,
+                    value=5,
+                    step=1,
+                    key=f"distance_{feature}",  # 고유 key 추가
+                    help="피크 간 최소 거리를 설정하세요"
+                )
 
-            current_distance = st.slider(
-                label="피크 간 최소 거리(distance)",
-                min_value=1,
-                max_value=100,
-                value=20,
-                step=1,
-                help="피크 간 최소 거리를 설정하세요"
-            )
+                # 데이터 보기 옵션 추가
+                view_option = st.radio(
+                    "보기 옵션을 선택하세요",
+                    options=["그래프 보기", "데이터프레임 보기"],
+                    help="그래프 또는 sensor_period 데이터프레임 중에서 선택하세요.",
+                    key=f"view_option_{feature}",  # 고유 key 추가
+                )
 
-            # 데이터 보기 옵션 추가
-            view_option = st.radio(
-                "보기 옵션을 선택하세요",
-                options=["그래프 보기", "데이터프레임 보기"],
-                help="그래프 또는 sensor_period 데이터프레임 중에서 선택하세요."
-            )
-
-            for feature in selected_columns:
+            
                 # 각 feature마다 피크 계산 및 데이터프레임 생성
+                
+            
                 sensor_period, peaks = sensor_moving_peak(
-                    current_data,
+                    current_data2,feature,
                     window_size=current_window_size,
                     min_distance=current_distance,
-                    feature=feature
+                    
                 )
 
                 if view_option == "그래프 보기":
+                    
+                    # 그래프 생성
+                    fig, ax = plt.subplots(figsize=(20, 10))
+                    print(current_data2)
                     if sensor_period.shape[0] > 0:
-                        # 그래프 생성
-                        fig, ax = plt.subplots(figsize=(15, 8))
-
-                        # 선형 그래프 그리기
+                        
                         ax.plot(
-                            current_data['created_at'],
-                            current_data[feature],
-                            label=f"{feature} (line)",
+                                current_data2['created_at'],
+                                current_data2[feature],
+                                label=f"{feature} 원본 데이터",
+                                linestyle='--',
+                                alpha=0.7,
+                            )
+                        
+                        
+                        # 평활화 그래프 그리기
+                        ax.plot(
+                            current_data2['created_at'],
+                            current_data2['smoothed_value'],
+                            label=f"{feature} 평활화 데이터",
                             zorder=1
                         )
 
                         # 피크 데이터 그리기
+                        
                         if len(peaks) > 0:  # peaks가 있는 경우만 처리
-                            peaks_data = current_data.iloc[peaks]
+                            peak_times = current_data2.iloc[peaks]['created_at']
+                            peak_values = current_data2.iloc[peaks]['smoothed_value']
                             ax.scatter(
-                                peaks_data['created_at'],
-                                peaks_data[feature],
+                                peak_times,
+                                peak_values,
                                 color='orange',
                                 s=50,
                                 label=f"{feature} (peaks)",
@@ -248,7 +256,7 @@ def paging(data):
                             )
 
                         # x축 범위 설정
-                        ax.set_xlim(current_data['created_at'].min(), current_data['created_at'].max())
+                        ax.set_xlim(current_data2['created_at'].min(), current_data2['created_at'].max())
                         ax.set_xlabel("날짜")
                         ax.set_ylabel("Value")
                         ax.set_title(f"Sensor Data: {feature}")
@@ -267,8 +275,8 @@ def paging(data):
                         st.table(sensor_period)
                     else:
                         st.warning(f"{feature}에 대한 데이터가 없습니다.")
-        else:
-            st.warning("데이터 크기가 너무 작아 슬라이더를 생성할 수 없습니다.")
+            else:
+                st.warning("데이터 크기가 너무 작아 슬라이더를 생성할 수 없습니다.")
     else:
         st.info("그래프로 표시할 컬럼을 선택하세요.")
 
@@ -317,9 +325,9 @@ with col1:
             st.warning("조회 결과가 없습니다.")
         else:
             total_users = ship_name_data['ea'].sum()
-            total_row = pd.DataFrame([{'device_id': '전체 선박', 'ea': total_users}])
+            total_row = pd.DataFrame([{'device_id': '전체 선박', 'uid':'---','mmsi':0,'---': total_users}])
             ship_name_data = pd.concat([total_row, ship_name_data], ignore_index=True)
-            ship_name_data.rename(columns={'ea': '개수'}, inplace=True)
+            ship_name_data.rename(columns={'uid':'사용자명','ea': '개수'}, inplace=True)
 
             st.subheader("조회 결과:")
             st.table(ship_name_data)
@@ -333,6 +341,7 @@ with col1:
             if selected_device == "Device ID를 선택하세요":
                 st.info("Device ID를 선택하세요.")
             else:
+                
                 st.session_state.raw_imu_data = get_gyro_data(
                     st.session_state.start_date, st.session_state.end_date, selected_device
                 )
