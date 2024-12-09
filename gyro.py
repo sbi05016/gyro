@@ -414,7 +414,7 @@ with col1:
             st.warning("조회 결과가 없습니다.")
         else:
             total_users = ship_name_data['ea'].sum()
-            total_row = pd.DataFrame([{'device_id': '전체 선박', 'uid':'---','mmsi':0,'---': total_users}])
+            total_row = pd.DataFrame([{'device_id': '전체 선박', 'uid':'---','mmsi':0,'---': int(total_users)}])
             ship_name_data = pd.concat([total_row, ship_name_data], ignore_index=True)
             ship_name_data.rename(columns={'uid':'사용자명','ea': '개수'}, inplace=True)
 
