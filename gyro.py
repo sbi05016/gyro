@@ -119,15 +119,229 @@ def sensor_moving_peak(sensor, feature, window_size=1, min_distance=10):
     return sensor_period, peaks
 
 
+def set_graph(current_data2,feature,current_window_size,current_distance):
+
+    # 데이터 크기 계산
+    data_size = current_data2.shape[0]
+    
+    
+    if data_size> 1:  # 슬라이더를 생성할 수 있는 조건
+        
+        #Roll 또는 Pitch 필터링 추가
+    
+        # with st.container():
+        #     sub_minmax1, sub_minmax2 = st.columns(2)
+        #     with sub_minmax1:
+        min_value = st.number_input(f"{feature} 최소값", value=current_data2[feature].min())
+            # with sub_minmax2:
+        max_value = st.number_input(f"{feature} 최대값", value=current_data2[feature].max())
+
+        filtered_data = current_data2[(current_data2[feature] >= min_value) & (current_data2[feature] <= max_value)]
+        if filtered_data.empty:
+            st.warning("선택한 범위에 해당하는 데이터가 없습니다.")
+            return
+
+        # 데이터 보기 옵션 추가
+        view_option = st.radio(
+            "보기 옵션을 선택하세요",
+            options=["그래프 보기", "데이터프레임 보기"],
+            help="그래프 또는 sensor_period 데이터프레임 중에서 선택하세요.",
+            key=f"view_option_{feature}",  # 고유 key 추가
+            horizontal=True
+        )
+
+    
+        # 각 feature마다 피크 계산 및 데이터프레임 생성
+        
+    
+        sensor_period, peaks = sensor_moving_peak(
+            current_data2,feature,
+            window_size=current_window_size,
+            min_distance=current_distance,
+            
+        )
+        # 슬라이더로 시간 범위 조절
+        min_date = current_data2['created_at'].min().to_pydatetime()  # 최소 날짜
+        max_date = current_data2['created_at'].max().to_pydatetime()  # 최대 날짜
+
+        x_axis_range = st.slider(
+            "X축 날짜 범위를 선택하세요",
+            min_value=min_date,
+            max_value=max_date,
+            value=(min_date, max_date),  # 기본값은 전체 범위
+            format="MM/DD HH:mm",
+            step=datetime.timedelta(minutes=1),
+            key=f"x_axis_range_{feature}"
+        )
+
+        # 필터링된 데이터
+        
+        x_start, x_end = x_axis_range
+        
+        if x_start >= x_end:
+            st.warning("범위가 올바르지 않습니다")
+            return
+        
+        current_data_filtered = current_data2[
+            (current_data2['created_at'] >= x_start) &
+            (current_data2['created_at'] <= x_end)
+            ]
+        
+        
+        if current_data_filtered.empty:
+            st.warning("선택된 X축 범위 내 데이터가 없습니다. 범위를 변경해주세요.")
+            return
+        
+        if view_option == "그래프 보기":
+            if sensor_period.shape[0] > 0:
+                
+                
+                
+                # X축 간격 조절 방식 선택
+                x_axis_mode = st.radio(
+                    "X축 간격 조절 방식",
+                    options=["자동", "수동"],
+                    index=0,
+                    key=f"x_axis_mode_{feature}",
+                    horizontal=True
+                )
+                
+                # 수동 모드 간격 선택 (콤보박스)
+                manual_interval = None
+                if x_axis_mode == "수동":
+                    manual_interval = st.selectbox(
+                        "수동 간격 선택",
+                        options=["1분", "5분", "10분", "30분", "1시간"],
+                        index=4,
+                        key=f"manual_interval_{feature}"
+                    )
+                    
+                fig, ax = plt.subplots(figsize=(20, 10))    
+                ax.plot(
+                        current_data_filtered['created_at'],
+                        current_data_filtered[feature],
+                        label=f"{feature} 원본 데이터",
+                        linestyle='--',
+                        alpha=0.7,
+                    )
+                
+                
+                # 평활화 그래프 그리기
+                ax.plot(
+                    current_data_filtered['created_at'],
+                    current_data_filtered['smoothed_value'],
+                    label=f"{feature} 평활화 데이터",
+                    zorder=1
+                )
+
+                # 피크 데이터 그리기
+                
+                if len(peaks) > 0:
+                    
+
+                    filtered_peaks, _ = find_peaks(
+                    current_data_filtered['smoothed_value'],  # 평활화된 값 기준으로 피크 탐지
+                    distance=current_distance  # 슬라이더에서 설정한 최소 거리 사용
+                )
+
+                    
+
+                    if len(filtered_peaks) > 0:
+                        # 유효한 피크 인덱스만 사용
+                        peak_times = current_data_filtered.iloc[filtered_peaks]['created_at']
+                        peak_values = current_data_filtered.iloc[filtered_peaks]['smoothed_value']
+
+                        # 피크 데이터 표시
+                        ax.scatter(
+                            peak_times,
+                            peak_values,
+                            color='orange',
+                            s=50,
+                            label=f"{feature} (peaks)",
+                            zorder=2
+                        )
+                    else:
+                        st.warning("선택된 범위 내 유효한 피크 데이터가 없습니다.")
+                    
+                else:
+                    st.warning("피크 데이터가 없습니다.")
+                    
+                # X축 간격 설정
+                if x_axis_mode == "자동":
+                    ax.xaxis.set_major_locator(mdates.AutoDateLocator())  # 자동 간격 설정
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))  # 날짜 형식 지정
+                elif x_axis_mode == "수동":
+                    # 수동 간격 처리
+                    interval_map = {
+                        "1분": mdates.MinuteLocator(interval=1),
+                        "5분": mdates.MinuteLocator(interval=5),
+                        "10분": mdates.MinuteLocator(interval=10),
+                        "30분": mdates.MinuteLocator(interval=30),
+                        "1시간": mdates.HourLocator(interval=1),
+                    }
+                    ax.xaxis.set_major_locator(interval_map[manual_interval])
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))  # 시간 형식 표시 (시:분)
+
+                # X축 레이블 회전 및 폰트 크기
+                plt.xticks(rotation=45, fontsize=10)
+
+                # 그래프 꾸미기
+                ax.set_xlabel("시간")
+                ax.set_ylabel("값")
+                ax.set_title(f"Sensor Data: {feature}")
+                ax.legend()
+                ax.grid(True)
+
+                # Streamlit에 그래프 표시
+                st.pyplot(fig)
+                    
+            else:
+                st.warning(f"{feature} 데이터가 없습니다.")
+        
+        elif view_option == "데이터프레임 보기":
+            if not sensor_period.empty:
+                st.subheader(f"Sensor Period Data: {feature}")
+                st.table(sensor_period)
+                st.subheader(f"{feature} Data")
+                st.table(current_data_filtered)
+            else:
+                st.warning(f"{feature}에 대한 데이터가 없습니다.")
+    else:
+        st.warning("데이터 크기가 너무 작아 슬라이더를 생성할 수 없습니다.")
+
+
+def graph_setting():
+    sub_cws1, sub_cws2 = st.columns(2)
+    with sub_cws1:
+        current_window_size = st.slider(
+            label="빈도 선택",
+            min_value=1,
+            max_value=20,
+            value=10,
+            key=f"window_size",  # 고유 key 추가
+            step=1
+        )
+    
+    with sub_cws2:
+        current_distance = st.slider(
+            label="피크 간 최소 거리(distance)",
+            min_value=1,
+            max_value=10,
+            value=5,
+            step=1,
+            key=f"distance",  # 고유 key 추가
+            help="피크 간 최소 거리를 설정하세요"
+        )
+        
+    return current_window_size,current_distance
+    
 
 def paging(data):
     
     if data.shape[0] == 0:
         st.warning("데이터가 없습니다.")
         return
-    
-
-    
+        
     elif 0<data.shape[0] < 10:
         st.sidebar.warning("데이터가 너무 작아 페이지당 항목 수를 설정할 수 없습니다.")
         items_per_page = data.shape[0]  # 모든 데이터를 한 페이지로 표시
@@ -164,208 +378,34 @@ def paging(data):
     st.write(f"현재 페이지: {current_page}/{total_pages}")
     st.dataframe(current_data)
 
-    # current_data.loc[:, 'roll'], current_data.loc[:, 'pitch'], current_data.loc[:, 'yaw'] = zip(*current_data.apply(
-    #     lambda row: np.degrees(quaternion_to_euler(
-    #         row['orientation_x'], row['orientation_y'], row['orientation_z'], row['orientation_w']
-    #     )), axis=1))
-
     # 여러 컬럼 선택 및 그래프 생성
     selected_columns = st.multiselect("그래프로 그릴 컬럼을 선택하세요:", ['Roll', 'Pitch'])
-
     if selected_columns:
-        for feature in selected_columns:
+        current_window_size,current_distance =  graph_setting()
+        
+        if len(selected_columns) == 1:
+            feature = selected_columns[0]
+            
             current_data2 = current_data[current_data['sensor_name']==feature]
             current_data2 = current_data2.rename(columns={"sensor_value_1": feature})
             current_data2 = current_data2.drop(columns=['sensor_name'])
-            
-            # 데이터 크기 계산
-            data_size = current_data2.shape[0]
-       
-            if data_size> 1:  # 슬라이더를 생성할 수 있는 조건
-                current_window_size = st.slider(
-                    label="빈도 선택",
-                    min_value=1,
-                    max_value=max(20, data_size // 2),
-                    value=min(5, data_size // 2),
-                    key=f"window_size_{feature}",  # 고유 key 추가
-                    step=1
-                )
-
-                current_distance = st.slider(
-                    label="피크 간 최소 거리(distance)",
-                    min_value=1,
-                    max_value=10,
-                    value=5,
-                    step=1,
-                    key=f"distance_{feature}",  # 고유 key 추가
-                    help="피크 간 최소 거리를 설정하세요"
-                )
-
-                # 데이터 보기 옵션 추가
-                view_option = st.radio(
-                    "보기 옵션을 선택하세요",
-                    options=["그래프 보기", "데이터프레임 보기"],
-                    help="그래프 또는 sensor_period 데이터프레임 중에서 선택하세요.",
-                    key=f"view_option_{feature}",  # 고유 key 추가
-                )
-
-            
-                # 각 feature마다 피크 계산 및 데이터프레임 생성
                 
+            set_graph(current_data2,feature,current_window_size,current_distance)
             
-                sensor_period, peaks = sensor_moving_peak(
-                    current_data2,feature,
-                    window_size=current_window_size,
-                    min_distance=current_distance,
+        elif len(selected_columns) == 2:
+            
+            with st.container():
+                sub_col1, sub_col2 = st.columns(2)
+                for idx, feature in enumerate(selected_columns):
+                    with [sub_col1, sub_col2][idx]:
+                        st.subheader(f"그래프 및 데이터: {feature}")
+                        current_data2 = current_data[current_data['sensor_name']==feature]
+                        current_data2 = current_data2.rename(columns={"sensor_value_1": feature})
+                        current_data2 = current_data2.drop(columns=['sensor_name'])
                     
-                )
-                # 슬라이더로 시간 범위 조절
-                min_date = current_data2['created_at'].min().to_pydatetime()  # 최소 날짜
-                max_date = current_data2['created_at'].max().to_pydatetime()  # 최대 날짜
-
-                x_axis_range = st.slider(
-                    "X축 날짜 범위를 선택하세요",
-                    min_value=min_date,
-                    max_value=max_date,
-                    value=(min_date, max_date),  # 기본값은 전체 범위
-                    format="MM/DD HH:mm",
-                    step=datetime.timedelta(minutes=1),
-                    key=f"x_axis_range_{feature}"
-                )
-
-                # 필터링된 데이터
-                
-                x_start, x_end = x_axis_range
-                
-                if x_start >= x_end:
-                    st.warning("범위가 올바르지 않습니다")
-                    return
-                
-                current_data_filtered = current_data2[
-                    (current_data2['created_at'] >= x_start) &
-                    (current_data2['created_at'] <= x_end)
-                    ]
-                
-                
-                if current_data_filtered.empty:
-                    st.warning("선택된 X축 범위 내 데이터가 없습니다. 범위를 변경해주세요.")
-                    return
-                
-                if view_option == "그래프 보기":
-                    if sensor_period.shape[0] > 0:
-                        
-                        
-                        
-                        # X축 간격 조절 방식 선택
-                        x_axis_mode = st.radio(
-                            "X축 간격 조절 방식",
-                            options=["자동", "수동"],
-                            index=0,
-                            key=f"x_axis_mode_{feature}"
-                        )
-                        
-                        # 수동 모드 간격 선택 (콤보박스)
-                        manual_interval = None
-                        if x_axis_mode == "수동":
-                            manual_interval = st.selectbox(
-                                "수동 간격 선택",
-                                options=["1분", "5분", "10분", "30분", "1시간"],
-                                index=4,
-                                key=f"manual_interval_{feature}"
-                            )
-                            
-                        fig, ax = plt.subplots(figsize=(20, 10))    
-                        ax.plot(
-                                current_data_filtered['created_at'],
-                                current_data_filtered[feature],
-                                label=f"{feature} 원본 데이터",
-                                linestyle='--',
-                                alpha=0.7,
-                            )
-                        
-                        
-                        # 평활화 그래프 그리기
-                        ax.plot(
-                            current_data_filtered['created_at'],
-                            current_data_filtered['smoothed_value'],
-                            label=f"{feature} 평활화 데이터",
-                            zorder=1
-                        )
-
-                        # 피크 데이터 그리기
-                        
-                        if len(peaks) > 0:
-                            
-
-                            filtered_peaks, _ = find_peaks(
-                            current_data_filtered['smoothed_value'],  # 평활화된 값 기준으로 피크 탐지
-                            distance=current_distance  # 슬라이더에서 설정한 최소 거리 사용
-                        )
-
-                            
-
-                            if len(filtered_peaks) > 0:
-                                # 유효한 피크 인덱스만 사용
-                                peak_times = current_data_filtered.iloc[filtered_peaks]['created_at']
-                                peak_values = current_data_filtered.iloc[filtered_peaks]['smoothed_value']
-
-                                # 피크 데이터 표시
-                                ax.scatter(
-                                    peak_times,
-                                    peak_values,
-                                    color='orange',
-                                    s=50,
-                                    label=f"{feature} (peaks)",
-                                    zorder=2
-                                )
-                            else:
-                                st.warning("선택된 범위 내 유효한 피크 데이터가 없습니다.")
-                            
-                        else:
-                            st.warning("피크 데이터가 없습니다.")
-                            
-                        # X축 간격 설정
-                        if x_axis_mode == "자동":
-                            ax.xaxis.set_major_locator(mdates.AutoDateLocator())  # 자동 간격 설정
-                            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))  # 날짜 형식 지정
-                        elif x_axis_mode == "수동":
-                            # 수동 간격 처리
-                            interval_map = {
-                                "1분": mdates.MinuteLocator(interval=1),
-                                "5분": mdates.MinuteLocator(interval=5),
-                                "10분": mdates.MinuteLocator(interval=10),
-                                "30분": mdates.MinuteLocator(interval=30),
-                                "1시간": mdates.HourLocator(interval=1),
-                            }
-                            ax.xaxis.set_major_locator(interval_map[manual_interval])
-                            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))  # 시간 형식 표시 (시:분)
-
-                        # X축 레이블 회전 및 폰트 크기
-                        plt.xticks(rotation=45, fontsize=10)
-
-                        # 그래프 꾸미기
-                        ax.set_xlabel("시간")
-                        ax.set_ylabel("값")
-                        ax.set_title(f"Sensor Data: {feature}")
-                        ax.legend()
-                        ax.grid(True)
-
-                        # Streamlit에 그래프 표시
-                        st.pyplot(fig)
-                            
-                    else:
-                        st.warning(f"{feature} 데이터가 없습니다.")
-                
-                elif view_option == "데이터프레임 보기":
-                    if not sensor_period.empty:
-                        st.subheader(f"Sensor Period Data: {feature}")
-                        st.table(sensor_period)
-                        st.subheader(f"{feature} Data")
-                        st.tabel(current_data_filtered)
-                    else:
-                        st.warning(f"{feature}에 대한 데이터가 없습니다.")
-            else:
-                st.warning("데이터 크기가 너무 작아 슬라이더를 생성할 수 없습니다.")
+                        set_graph(current_data2,feature,current_window_size,current_distance)
+                    
+            
     else:
         st.info("그래프로 표시할 컬럼을 선택하세요.")
 
@@ -414,7 +454,7 @@ with col1:
             st.warning("조회 결과가 없습니다.")
         else:
             total_users = ship_name_data['ea'].sum()
-            total_row = pd.DataFrame([{'device_id': '전체 선박', 'uid':'---','mmsi':0,'---': int(total_users)}])
+            total_row = pd.DataFrame([{'device_id': '전체 선박', 'uid':'---','mmsi':0,'ea': int(total_users)}])
             ship_name_data = pd.concat([total_row, ship_name_data], ignore_index=True)
             ship_name_data.rename(columns={'uid':'사용자명','ea': '개수'}, inplace=True)
 
