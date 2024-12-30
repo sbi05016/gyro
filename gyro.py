@@ -11,7 +11,7 @@ import numpy as np
 import math
 from scipy.signal import find_peaks
 import matplotlib.dates as mdates
-
+from streamlit_datetime_range_picker import datetime_range_picker
 
 plt.rcParams['font.family'] ='Malgun Gothic'
 plt.rcParams['axes.unicode_minus'] =False
@@ -30,7 +30,7 @@ con_str = con_str_fmt.format(USERNAME, PASSWORD, HOSTNAME, PORT, DATABASE)
 engine = create_engine(con_str)
 
 # 데이터베이스에서 선박 데이터 가져오기
-def get_ship_names(start_date, end_date):
+def get_ship_names(start_datetime, end_datetime):
     query = f"""
                             SELECT 
                         u.uid,
@@ -44,18 +44,17 @@ def get_ship_names(start_date, end_date):
                     ON 
                         r.device_id = u.device_name 
                     WHERE 
-                        r.created_at >= '{start_date}' AND r.created_at <= '{end_date} 23:59:59'
+                        r.created_at >= '{start_datetime}' AND r.created_at <= '{end_datetime}'
                     GROUP BY 
                         u.uid, u.mmsi, r.device_id;
     """
-    
     
     
     with psycopg2.connect(host=HOSTNAME, dbname=DATABASE, user=USERNAME, password=PASSWORD) as conn:
         return psql.read_sql(query, conn)
 
 # 데이터베이스에서 특정 device_id의 데이터를 가져오기
-def get_gyro_data(start_date, end_date, device_id):
+def get_gyro_data(start_datetime, end_datetime, device_id):
 
     if device_id == '전체 선박':
         query_raw = ''
@@ -65,7 +64,7 @@ def get_gyro_data(start_date, end_date, device_id):
     query1 = f"""
         SELECT sensor_name,sensor_value_1,device_id,created_at
         FROM PUBLIC."Sensor"
-        WHERE {query_raw} created_at >= '{start_date}' AND created_at <= '{end_date} 23:59:59'
+        WHERE {query_raw} created_at >= '{start_datetime}' AND created_at <= '{end_datetime}'
         ORDER BY created_at DESC;
     """
     
@@ -74,6 +73,7 @@ def get_gyro_data(start_date, end_date, device_id):
         
     raw_imu_data.set_index(raw_imu_data['device_id'], inplace=True)
     raw_imu_data.drop(columns=['device_id'], inplace=True)
+    print(query1)
     
 
     return raw_imu_data
@@ -113,7 +113,7 @@ def sensor_moving_peak(sensor, feature, window_size=1, min_distance=10):
     upper_quantile = sensor_period.deg_diff.quantile(0.8)
     sensor_period =  sensor_period[(sensor_period.deg_diff > lower_quantile) & (sensor_period.deg_diff < upper_quantile)]
 
-    sensor_period = sensor_period[['max_deg','min_deg','spd','datetime']]
+    sensor_period = sensor_period[['start_idx','end_idx','max_deg','min_deg','period','spd','datetime']]
 
     
     return sensor_period, peaks
@@ -302,8 +302,9 @@ def set_graph(current_data2,feature,current_window_size,current_distance):
             if not sensor_period.empty:
                 st.subheader(f"Sensor Period Data: {feature}")
                 st.table(sensor_period)
-                st.subheader(f"{feature} Data")
-                st.table(current_data_filtered)
+                print(peaks)
+                
+                
             else:
                 st.warning(f"{feature}에 대한 데이터가 없습니다.")
     else:
@@ -342,42 +343,6 @@ def paging(data):
         st.warning("데이터가 없습니다.")
         return
         
-    elif 0<data.shape[0] < 10:
-        st.sidebar.warning("데이터가 너무 작아 페이지당 항목 수를 설정할 수 없습니다.")
-        items_per_page = data.shape[0]  # 모든 데이터를 한 페이지로 표시
-    
-    else:
-        if data.shape[0]//10>0:
-            default_items_per_page = max(10, data.shape[0] // 10)
-        else:
-            default_items_per_page = max(1, data.shape[0] // 10)
-        items_per_page = st.sidebar.slider("페이지당 항목 수", min_value=1, max_value=data.shape[0], value=default_items_per_page, step=10)
-    
-    total_items = len(data)
-    
-    if total_items == 0:
-        st.warning("데이터가 없습니다.")  # 데이터가 없을 경우 경고 메시지 표시
-        return
-
-    total_pages = (total_items // items_per_page) + (1 if total_items % items_per_page > 0 else 0)
-
-    # 페이지 선택 슬라이더
-    if total_pages > 1:
-        # current_page = st.sidebar.slider("페이지 선택", 1, total_pages, 1)
-        page_options = list(range(1, total_pages + 1))
-        current_page = st.sidebar.selectbox("페이지 선택",  page_options,index=0)
-        
-    else:
-        current_page = 1  # 총 페이지가 1개 이하인 경우 기본값 설정
-
-    start_idx = max(0, (current_page - 1) * items_per_page)
-    end_idx = min(total_items, start_idx + items_per_page)
-    
-    current_data = data.iloc[start_idx:end_idx]
-
-    st.write(f"현재 페이지: {current_page}/{total_pages}")
-    st.dataframe(current_data)
-
     # 여러 컬럼 선택 및 그래프 생성
     selected_columns = st.multiselect("그래프로 그릴 컬럼을 선택하세요:", ['Roll', 'Pitch'])
     if selected_columns:
@@ -386,7 +351,7 @@ def paging(data):
         if len(selected_columns) == 1:
             feature = selected_columns[0]
             
-            current_data2 = current_data[current_data['sensor_name']==feature]
+            current_data2 = data[data['sensor_name']==feature]
             current_data2 = current_data2.rename(columns={"sensor_value_1": feature})
             current_data2 = current_data2.drop(columns=['sensor_name'])
                 
@@ -399,7 +364,7 @@ def paging(data):
                 for idx, feature in enumerate(selected_columns):
                     with [sub_col1, sub_col2][idx]:
                         st.subheader(f"그래프 및 데이터: {feature}")
-                        current_data2 = current_data[current_data['sensor_name']==feature]
+                        current_data2 = data[data['sensor_name']==feature]
                         current_data2 = current_data2.rename(columns={"sensor_value_1": feature})
                         current_data2 = current_data2.drop(columns=['sensor_name'])
                     
@@ -428,15 +393,31 @@ st.set_page_config(layout="wide")  # 와이드 레이아웃 활성화
 # 사이드바: 날짜 및 조회 설정
 with st.sidebar:
     st.title("Gyro 데이터 조회")
+
     start_date = st.date_input("시작일", value=datetime.date.today() - datetime.timedelta(days=1))
+    if start_date:
+        with st.expander("시작 시간을 선택하세요"):
+            start_time = st.time_input("시작 시간", value=datetime.time(0, 0),key='start_time')
+        
+    start_datetime = datetime.datetime.combine(start_date, start_time)
+
     end_date = st.date_input("종료일", value=datetime.date.today())
+    if end_date:
+        with st.expander("시작 시간을 선택하세요"):
+            end_time = st.time_input("시간", value=datetime.time(0, 0),key='end_time')
+
+    end_datetime = datetime.datetime.combine(end_date, end_time)
+
+
+
+
 
     if st.button("조회"):
         try: 
             with st.spinner("데이터를 불러오는 중입니다... 잠시만 기다려주세요."):
-                st.session_state.start_date = start_date
-                st.session_state.end_date = end_date
-                st.session_state.ship_name_data = get_ship_names(start_date, end_date)
+                st.session_state.start_datetime = start_datetime
+                st.session_state.end_datetime = end_datetime
+                st.session_state.ship_name_data = get_ship_names(start_datetime, end_datetime)
             st.success("데이터를 성공적으로 불러왔습니다!")
         except Exception as e:
             st.error("오류 발생")
@@ -447,6 +428,11 @@ col1, col2 = st.columns([99, 1])  # 비율 설정 (중앙 9, 오른쪽 1)
 
 with col1:
     # 중앙 영역: 데이터 테이블 출력
+    if start_datetime>end_datetime:
+        st.error('값 오류')
+    else:
+        st.info(f"시작 시간 : {start_datetime}        \n       종료 시간 : {end_datetime}")
+
     if st.session_state.ship_name_data is not None:
         ship_name_data = st.session_state.ship_name_data
 
@@ -472,7 +458,7 @@ with col1:
             else:
                 
                 st.session_state.raw_imu_data = get_gyro_data(
-                    st.session_state.start_date, st.session_state.end_date, selected_device
+                    st.session_state.start_datetime, st.session_state.end_datetime, selected_device
                 )
                 
                 data = st.session_state.raw_imu_data.drop_duplicates().sort_values(by='created_at') 
